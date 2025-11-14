@@ -17,6 +17,7 @@
 package org.apache.rocketmq.tieredstore.index;
 
 import com.google.common.base.Stopwatch;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
@@ -243,13 +244,13 @@ public class IndexStoreFile implements IndexFile {
                     topicId, queueId, offset, size, hashCode, timeDiff, slotOldValue);
                 int itemIndex = this.indexItemCount.incrementAndGet();
                 int itemPosition = this.getItemPosition(itemIndex);
-                
+
                 if (writeWithoutMmap && fileChannel != null) {
                     // Use FileChannel for writing
                     ByteBuffer itemBuffer = indexItem.getByteBuffer();
                     fileChannel.position(itemPosition);
                     fileChannel.write(itemBuffer);
-                    
+
                     ByteBuffer slotBuffer = ByteBuffer.allocate(Integer.BYTES);
                     slotBuffer.putInt(0, itemIndex);
                     slotBuffer.position(0);
@@ -436,6 +437,8 @@ public class IndexStoreFile implements IndexFile {
             buffer = compactToNewFile();
             log.debug("IndexStoreFile do compaction, timestamp: {}, file size: {}, cost: {}ms",
                 this.getTimestamp(), buffer.capacity(), stopwatch.elapsed(TimeUnit.MICROSECONDS));
+        } catch (FileNotFoundException e) {
+            throw new RuntimeException(e);
         } catch (Throwable e) {
             log.error("IndexStoreFile do compaction, timestamp: {}, cost: {}ms",
                 this.getTimestamp(), stopwatch.elapsed(TimeUnit.MICROSECONDS), e);
@@ -482,7 +485,7 @@ public class IndexStoreFile implements IndexFile {
                 buffer.get(payload);
                 int newSlotValue = payloadBuffer.getInt(COMPACT_INDEX_ITEM_SIZE);
                 buffer.limit(COMPACT_INDEX_ITEM_SIZE);
-                
+
                 if (writeWithoutMmap && compactFileChannel != null) {
                     // Use FileChannel for writing
                     ByteBuffer writeBuffer = ByteBuffer.wrap(payload, 0, COMPACT_INDEX_ITEM_SIZE);
@@ -537,11 +540,13 @@ public class IndexStoreFile implements IndexFile {
             }
             if (this.mappedFile != null) {
                 this.mappedFile.shutdown(TimeUnit.SECONDS.toMillis(10));
+                this.mappedFile.cleanResources();
             }
             if (this.compactMappedFile != null) {
                 this.compactMappedFile.shutdown(TimeUnit.SECONDS.toMillis(10));
+                this.compactMappedFile.cleanResources();
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             log.error("IndexStoreFile shutdown failed, timestamp: {}, status: {}", this.getTimestamp(), fileStatus.get(), e);
         } finally {
             fileReadWriteLock.writeLock().unlock();
