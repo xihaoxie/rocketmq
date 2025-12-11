@@ -117,6 +117,7 @@ import org.apache.rocketmq.broker.transaction.AbstractTransactionalMessageCheckL
 import org.apache.rocketmq.broker.transaction.TransactionMetricsFlushService;
 import org.apache.rocketmq.broker.transaction.TransactionalMessageCheckService;
 import org.apache.rocketmq.broker.transaction.TransactionalMessageService;
+import org.apache.rocketmq.broker.transaction.rocksdb.TransactionalMessageRocksDBService;
 import org.apache.rocketmq.broker.transaction.queue.DefaultTransactionalMessageCheckListener;
 import org.apache.rocketmq.broker.transaction.queue.TransactionalMessageBridge;
 import org.apache.rocketmq.broker.transaction.queue.TransactionalMessageServiceImpl;
@@ -178,6 +179,8 @@ import org.apache.rocketmq.store.stats.LmqBrokerStatsManager;
 import org.apache.rocketmq.store.timer.TimerCheckpoint;
 import org.apache.rocketmq.store.timer.TimerMessageStore;
 import org.apache.rocketmq.store.timer.TimerMetrics;
+import org.apache.rocketmq.store.timer.rocksdb.TimerMessageRocksDBStore;
+import org.apache.rocketmq.store.transaction.TransMessageRocksDBStore;
 
 public class BrokerController {
     protected static final Logger LOG = LoggerFactory.getLogger(LoggerName.BROKER_LOGGER_NAME);
@@ -269,6 +272,8 @@ public class BrokerController {
     private BrokerStats brokerStats;
     private InetSocketAddress storeHost;
     private TimerMessageStore timerMessageStore;
+    private TimerMessageRocksDBStore timerMessageRocksDBStore;
+    private TransMessageRocksDBStore transMessageRocksDBStore;
     private TimerCheckpoint timerCheckpoint;
     protected BrokerFastFailure brokerFastFailure;
     private Configuration configuration;
@@ -277,6 +282,7 @@ public class BrokerController {
     protected TransactionalMessageCheckService transactionalMessageCheckService;
     protected TransactionalMessageService transactionalMessageService;
     protected AbstractTransactionalMessageCheckListener transactionalMessageCheckListener;
+    protected TransactionalMessageRocksDBService transactionalMessageRocksDBService;
     protected volatile boolean shutdown = false;
     protected ShutdownHook shutdownHook;
     private volatile boolean isScheduleServiceStart = false;
@@ -865,6 +871,14 @@ public class BrokerController {
                 this.timerMessageStore = new TimerMessageStore(messageStore, messageStoreConfig, timerCheckpoint, timerMetrics, brokerStatsManager);
                 this.timerMessageStore.registerEscapeBridgeHook(msg -> escapeBridge.putMessage(msg));
                 this.messageStore.setTimerMessageStore(this.timerMessageStore);
+                if (messageStoreConfig.isTimerRocksDBEnable()) {
+                    this.timerMessageRocksDBStore = new TimerMessageRocksDBStore(messageStore, timerMetrics, brokerStatsManager);
+                    this.messageStore.setTimerMessageRocksDBStore(timerMessageRocksDBStore);
+                }
+            }
+            if (messageStoreConfig.isTransRocksDBEnable()) {
+                this.transMessageRocksDBStore = new TransMessageRocksDBStore(messageStore, brokerStatsManager, new InetSocketAddress(this.getBrokerConfig().getBrokerIP1(), this.getNettyServerConfig().getListenPort()));
+                this.messageStore.setTransRocksDBStore(transMessageRocksDBStore);
             }
         } catch (Exception e) {
             result = false;
@@ -904,6 +918,9 @@ public class BrokerController {
 
         if (messageStoreConfig.isTimerWheelEnable()) {
             result = result && this.timerMessageStore.load();
+            if (messageStoreConfig.isTimerRocksDBEnable()) {
+                result = result && this.timerMessageRocksDBStore.load();
+            }
         }
 
         //scheduleMessageService load after messageStore load success
@@ -1060,6 +1077,10 @@ public class BrokerController {
         this.transactionMetricsFlushService = new TransactionMetricsFlushService(this);
         this.transactionMetricsFlushService.start();
 
+        if (messageStoreConfig.isTransRocksDBEnable()) {
+            this.transactionalMessageRocksDBService = new TransactionalMessageRocksDBService(messageStore, this);
+            this.transactionalMessageRocksDBService.start();
+        }
     }
 
     private void initialRpcHooks() {
@@ -1400,6 +1421,14 @@ public class BrokerController {
         this.timerMessageStore = timerMessageStore;
     }
 
+    public TimerMessageRocksDBStore getTimerMessageRocksDBStore() {
+        return timerMessageRocksDBStore;
+    }
+
+    public void setTimerMessageRocksDBStore(TimerMessageRocksDBStore timerMessageRocksDBStore) {
+        this.timerMessageRocksDBStore = timerMessageRocksDBStore;
+    }
+
     public AckMessageProcessor getAckMessageProcessor() {
         return ackMessageProcessor;
     }
@@ -1473,6 +1502,10 @@ public class BrokerController {
             this.transactionMetricsFlushService.shutdown();
         }
 
+        if (this.transactionalMessageRocksDBService != null) {
+            this.transactionalMessageRocksDBService.shutdown();
+        }
+
         if (this.notificationProcessor != null) {
             this.notificationProcessor.getPopLongPollingService().shutdown();
         }
@@ -1488,6 +1521,15 @@ public class BrokerController {
         if (this.timerMessageStore != null) {
             this.timerMessageStore.shutdown();
         }
+
+        if (this.timerMessageRocksDBStore != null) {
+            this.timerMessageRocksDBStore.shutdown();
+        }
+
+        if (this.transMessageRocksDBStore != null) {
+            this.transMessageRocksDBStore.shutdown();
+        }
+
         if (this.fileWatchService != null) {
             this.fileWatchService.shutdown();
         }
@@ -1562,7 +1604,7 @@ public class BrokerController {
         if (this.transactionalMessageCheckService != null) {
             this.transactionalMessageCheckService.shutdown(false);
         }
-        
+
         if (this.loadBalanceExecutor != null) {
             this.loadBalanceExecutor.shutdown();
         }
@@ -1691,6 +1733,10 @@ public class BrokerController {
 
         if (this.timerMessageStore != null) {
             this.timerMessageStore.start();
+        }
+
+        if (this.timerMessageRocksDBStore != null && this.messageStoreConfig.isTimerRocksDBEnable()) {
+            this.timerMessageRocksDBStore.start();
         }
 
         if (this.replicasManager != null) {
